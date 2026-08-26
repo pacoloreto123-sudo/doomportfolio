@@ -9001,5 +9001,33 @@ if (Module["noInitialRun"]) shouldRunNow = false;
 run();
 
 </script>
+
+<script>
+// DOOM_RESIZE_REPORTER_INSTALLED
+// Tells whatever page embeds this file (e.g. a Framer Embed iframe) how
+// tall the content actually is, so the parent can size the iframe box to
+// fit instead of clipping it. Uses postMessage since the embedding page
+// is usually on a different origin (cross-origin iframes can't read each
+// other's DOM directly).
+(function () {
+  function reportSize() {
+    var wrap = document.getElementById('doom-wrap');
+    if (!wrap || !window.parent || window.parent === window) return;
+    window.parent.postMessage(
+      { type: 'doom-embed-resize', height: wrap.scrollHeight },
+      '*'
+    );
+  }
+  window.addEventListener('load', reportSize);
+  window.addEventListener('resize', reportSize);
+  window.addEventListener('orientationchange', reportSize);
+  if (window.ResizeObserver) {
+    var wrapEl = document.getElementById('doom-wrap');
+    if (wrapEl) new ResizeObserver(reportSize).observe(wrapEl);
+  }
+  // fire once immediately too, in case 'load' already passed
+  reportSize();
+})();
+</script>
 </body>
 </html>
