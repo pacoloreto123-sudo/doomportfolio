@@ -1,0 +1,117 @@
+<!--
+  Paste this into a Framer "Embed" component, placed near the bottom of
+  the page. It costs ~2 KB on initial page load: nothing else loads until
+  the visitor clicks "Play DOOM". At that point it injects an <iframe>
+  pointing at the full game file (doom-embed.html), which you must host
+  somewhere with a public URL first -- see the "1. Host the game file"
+  note below.
+
+  This version auto-sizes the iframe to fit the game's real content
+  height (canvas + credit line + touch controls) instead of guessing a
+  fixed pixel height, which is what caused the "canvas gets cut off on
+  mobile" bug -- doom-embed.html now posts its actual height via
+  postMessage on load/resize, and this snippet listens for that and
+  resizes the iframe to match.
+
+  1. Host the game file
+     Point IFRAME_SRC below at wherever you're hosting doom-embed.html,
+     e.g. GitHub Pages:
+       https://pacoloreto123-sudo.github.io/doomportfolio/doom-embed.html
+
+  2. Where to paste in Framer
+     Framer left sidebar -> Insert (+) -> Embed -> drag it onto the
+     canvas near the bottom of the page -> click the Embed component ->
+     in the right-hand panel click "Open Code Editor" (or the </> icon)
+     -> delete the placeholder and paste this whole file's contents.
+
+  3. Component sizing in Framer
+     Set the Embed component's Height to "Auto" / "Fit content" if your
+     Framer version offers it -- that's the most robust option. If it
+     doesn't, or Auto doesn't take effect, this snippet's own JS-driven
+     resize (below) handles it regardless, so a fixed placeholder height
+     on the component itself (e.g. 500px) is just a reasonable starting
+     size, not the final word.
+-->
+<div id="doom-easter-egg" style="max-width:820px;margin:0 auto;font-family:ui-monospace,'SF Mono',Menlo,Consolas,'Courier New',monospace;">
+  <div id="doom-launch-holder" style="position:relative;width:100%;aspect-ratio:4/3;background:#0b0b0b;border:1px solid #333;display:flex;align-items:center;justify-content:center;text-align:center;color:#d9d9d9;overflow:hidden;">
+    <div style="padding:1.5em;">
+      <div style="font-size:16px;letter-spacing:2px;margin-bottom:10px;">DOOM</div>
+      <div style="font-size:13px;line-height:1.6;">Shareware episode &mdash; &quot;Knee-Deep in the Dead&quot;<br>A fully playable easter egg. Runs entirely in your browser.</div>
+      <button id="doom-launch-btn" type="button" style="margin-top:14px;background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:10px 18px;font-family:inherit;font-size:13px;cursor:pointer;">
+        Play DOOM (loads ~16&nbsp;MB)
+      </button>
+    </div>
+  </div>
+  <div id="doom-outer-credit" style="font-size:11px;line-height:1.6;color:#888;margin-top:10px;text-align:center;">
+    DOOM shareware &copy; id Software, used under their free-distribution terms.<br>
+    Engine: <a href="https://github.com/justinh-rahb/webui-doom" target="_blank" rel="noopener noreferrer" style="color:#aaa;">webui-doom</a>
+    (WebAssembly port of <a href="https://github.com/chocolate-doom/chocolate-doom" target="_blank" rel="noopener noreferrer" style="color:#aaa;">Chocolate Doom</a>
+    via <a href="https://github.com/cloudflare/doom-wasm" target="_blank" rel="noopener noreferrer" style="color:#aaa;">cloudflare/doom-wasm</a>),
+    licensed GPL-2.0.
+  </div>
+  <!--
+    This credit line is shown here (outside the iframe) so it's visible
+    even before someone clicks "Play" -- doom-embed.html shows its own
+    identical credit line once loaded, so the click handler below hides
+    this one at that point to avoid it appearing twice.
+  -->
+</div>
+<script>
+(function () {
+  // ---- EDIT THIS LINE: point it at wherever you hosted doom-embed.html ----
+  var IFRAME_SRC = "https://pacoloreto123-sudo.github.io/doomportfolio/doom-embed.html";
+
+  var btn = document.getElementById('doom-launch-btn');
+  var holder = document.getElementById('doom-launch-holder');
+  var outerCredit = document.getElementById('doom-outer-credit');
+  var iframe = null;
+
+  // Extract the origin (scheme+host+port) from IFRAME_SRC so we only
+  // trust resize messages that actually came from our own game iframe,
+  // not some unrelated postMessage on the page.
+  var expectedOrigin;
+  try {
+    expectedOrigin = new URL(IFRAME_SRC, window.location.href).origin;
+  } catch (e) {
+    expectedOrigin = null;
+  }
+
+  window.addEventListener('message', function (event) {
+    if (expectedOrigin && event.origin !== expectedOrigin) return;
+    var data = event.data;
+    if (!data || data.type !== 'doom-embed-resize' || typeof data.height !== 'number') return;
+    if (!iframe) return;
+
+    // Once we know the real height, stop relying on the aspect-ratio
+    // placeholder and size the box exactly -- this is what fixes the
+    // "canvas cut off" issue, since the box now always matches the
+    // iframe's actual content instead of a guessed ratio.
+    holder.style.aspectRatio = 'auto';
+    holder.style.height = data.height + 'px';
+    iframe.style.height = data.height + 'px';
+  });
+
+  btn.addEventListener('click', function () {
+    btn.textContent = 'Loading…';
+    btn.disabled = true;
+
+    iframe = document.createElement('iframe');
+    iframe.src = IFRAME_SRC;
+    iframe.title = 'DOOM shareware (browser easter egg)';
+    iframe.allow = 'autoplay';
+    // Positioned to fill the placeholder box until the real-height
+    // message arrives (usually well under a second), then the message
+    // handler above switches both holder and iframe to an explicit
+    // pixel height sized to the actual content.
+    iframe.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;display:block;';
+
+    holder.style.position = 'relative';
+    holder.innerHTML = '';
+    holder.appendChild(iframe);
+
+    // doom-embed.html shows its own identical credit line once it loads,
+    // so hide this outer copy to avoid showing it twice.
+    if (outerCredit) outerCredit.style.display = 'none';
+  });
+})();
+</script>
