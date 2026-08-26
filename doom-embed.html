@@ -191,10 +191,11 @@ window.onerror = function() {
 // ---- Touch controls overlay (added on top of the engine, not part of it) ---
 // Translates on-screen button presses into the same synthetic keydown/keyup
 // KeyboardEvents a physical keyboard would produce, dispatched on document
-// and window so they reach whatever element the compiled SDL/Emscripten
-// input layer registered its listeners on. The engine keeps its own
-// pressed/released key-state table, so one keydown on touchstart and one
-// keyup on touchend is enough to hold a key "down" for the whole gesture.
+// (a bubbling event dispatched there is also delivered to any listener on
+// window per the DOM spec, so one dispatch reaches either target - no need
+// to dispatch twice). The engine keeps its own pressed/released key-state
+// table, so one keydown on touchstart and one keyup on touchend is enough
+// to hold a key "down" for the whole gesture.
 (function() {
   var KEY_MAP = {
     ArrowUp:    { code: 'ArrowUp',    key: 'ArrowUp',    keyCode: 38 },
@@ -225,52 +226,63 @@ window.onerror = function() {
       Object.defineProperty(ev, 'which', { get: function() { return spec.keyCode; } });
     } catch (e) {}
     document.dispatchEvent(ev);
-    var ev2;
-    try {
-      ev2 = new KeyboardEvent(type, {
-        key: spec.key,
-        code: spec.code,
-        bubbles: true,
-        cancelable: true
-      });
-      Object.defineProperty(ev2, 'code', { get: function() { return spec.code; } });
-      Object.defineProperty(ev2, 'key', { get: function() { return spec.key; } });
-      Object.defineProperty(ev2, 'keyCode', { get: function() { return spec.keyCode; } });
-      Object.defineProperty(ev2, 'which', { get: function() { return spec.keyCode; } });
-    } catch (e) {
-      ev2 = ev;
-    }
-    window.dispatchEvent(ev2);
   }
+
+  var releaseAll = [];
 
   function bindButton(el) {
     var spec = KEY_MAP[el.getAttribute('data-key')];
     if (!spec) return;
-    var active = false;
+    // Count rather than a boolean, so a second finger landing on the same
+    // button (or a stray duplicate touch) can't cause the first finger's
+    // lift to send keyup while a finger is still physically down.
+    var touchCount = 0;
 
-    function press(e) {
-      if (e) e.preventDefault();
-      if (active) return;
-      active = true;
+    function down() {
       el.classList.add('dc-active');
       dispatchKey('keydown', spec);
     }
-    function release(e) {
-      if (e) e.preventDefault();
-      if (!active) return;
-      active = false;
+    function up() {
       el.classList.remove('dc-active');
       dispatchKey('keyup', spec);
+    }
+    function press(e) {
+      if (e) e.preventDefault();
+      touchCount++;
+      if (touchCount === 1) down();
+    }
+    function release(e) {
+      if (e) e.preventDefault();
+      if (touchCount === 0) return;
+      touchCount--;
+      if (touchCount === 0) up();
+    }
+    function forceRelease() {
+      if (touchCount === 0) return;
+      touchCount = 0;
+      up();
     }
 
     el.addEventListener('touchstart', press, { passive: false });
     el.addEventListener('touchend', release, { passive: false });
     el.addEventListener('touchcancel', release, { passive: false });
     el.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+    releaseAll.push(forceRelease);
   }
 
   var buttons = document.querySelectorAll('#doom-touch-controls .dc-btn');
   for (var i = 0; i < buttons.length; i++) bindButton(buttons[i]);
+
+  // If the tab gets backgrounded mid-touch (app switch, phone lock, an
+  // incoming call), no touchend/touchcancel may ever arrive for a held
+  // button. Force every button up so a key can't stay stuck "down" in the
+  // engine indefinitely (e.g. the player walking into a wall forever).
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      for (var j = 0; j < releaseAll.length; j++) releaseAll[j]();
+    }
+  });
 })();
 </script>
 <script>
@@ -9009,24 +9021,68 @@ run();
 // fit instead of clipping it. Uses postMessage since the embedding page
 // is usually on a different origin (cross-origin iframes can't read each
 // other's DOM directly).
+//
+// #doom-wrap has no fixed height of its own: #doom-canvas-holder is
+// `width: 100%; aspect-ratio: 4/3`, so its height - and therefore
+// wrap.scrollHeight - is only correct once the IFRAME ITSELF has been laid
+// out to its real width by the embedding page. On first load that width
+// is frequently wrong for a moment (the parent hasn't settled its own
+// responsive layout yet, or this document is still busy decoding tens of
+// MB of embedded base64 when the width change actually lands), so there's
+// no fixed number of frames/timeouts that reliably comes "after" it. A
+// height threshold doesn't work either: a too-narrow width doesn't
+// necessarily read as a suspiciously *small* height - the credit text
+// below the canvas just wraps onto more lines, which can measure just as
+// tall (or taller) than the correct, settled layout.
+//
+// So instead of guessing when the size is "final", we watch for it to
+// actually settle: any resize/orientation/ResizeObserver signal restarts
+// a short quiet-period timer, and we only postMessage once two
+// consecutive measurements 120ms apart agree. A width correction shortly
+// after load just restarts the wait instead of racing a stale report.
 (function () {
-  function reportSize() {
-    var wrap = document.getElementById('doom-wrap');
-    if (!wrap || !window.parent || window.parent === window) return;
-    window.parent.postMessage(
-      { type: 'doom-embed-resize', height: wrap.scrollHeight },
-      '*'
-    );
+  var wrap = document.getElementById('doom-wrap');
+  if (!wrap) return;
+
+  var lastSent = -1;
+  var lastMeasured = -1;
+  var quietTimer = null;
+
+  function send(height) {
+    if (!height) return;
+    if (!window.parent || window.parent === window) return;
+    if (height === lastSent) return;
+    lastSent = height;
+    window.parent.postMessage({ type: 'doom-embed-resize', height: height }, '*');
   }
-  window.addEventListener('load', reportSize);
-  window.addEventListener('resize', reportSize);
-  window.addEventListener('orientationchange', reportSize);
-  if (window.ResizeObserver) {
-    var wrapEl = document.getElementById('doom-wrap');
-    if (wrapEl) new ResizeObserver(reportSize).observe(wrapEl);
+
+  function checkQuiet() {
+    var height = wrap.scrollHeight;
+    if (height === lastMeasured) {
+      quietTimer = null;
+      send(height);
+      return;
+    }
+    lastMeasured = height;
+    quietTimer = setTimeout(checkQuiet, 120);
   }
-  // fire once immediately too, in case 'load' already passed
-  reportSize();
+
+  function scheduleCheck() {
+    if (quietTimer) clearTimeout(quietTimer);
+    lastMeasured = -1; // require a fresh pair of matching reads
+    quietTimer = setTimeout(checkQuiet, 120);
+  }
+
+  window.addEventListener('resize', scheduleCheck);
+  window.addEventListener('orientationchange', scheduleCheck);
+  if (window.ResizeObserver) new ResizeObserver(scheduleCheck).observe(wrap);
+  window.addEventListener('load', scheduleCheck);
+  requestAnimationFrame(function () { requestAnimationFrame(scheduleCheck); });
+
+  // Safety net: if nothing ever reads as "quiet" (e.g. a genuinely
+  // still-animating host layout), make sure the parent isn't left
+  // un-sized indefinitely by sending whatever we've got after 1.5s.
+  setTimeout(function () { if (lastSent === -1) send(wrap.scrollHeight); }, 1500);
 })();
 </script>
 </body>
